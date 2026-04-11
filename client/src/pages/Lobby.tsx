@@ -58,6 +58,10 @@ export default function Lobby() {
     });
   }, []);
 
+  const handleOnlineList = useCallback((data: { userIds: string[] }) => {
+    setOnlineFriends(new Set(data.userIds));
+  }, []);
+
   const handleChallengeReceived = useCallback((data: Challenge) => {
     setIncomingChallenges((prev) => [...prev, data]);
   }, []);
@@ -71,6 +75,7 @@ export default function Lobby() {
     navigate(`/game/${data.game.id}`, { state: data });
   }, [navigate]);
 
+  useSocketEvent('friends:online_list', handleOnlineList);
   useSocketEvent('friend:online', handleOnline);
   useSocketEvent('friend:offline', handleOffline);
   useSocketEvent('challenge:received', handleChallengeReceived);

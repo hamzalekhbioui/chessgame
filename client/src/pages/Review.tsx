@@ -167,16 +167,17 @@ export default function Review() {
         <div className="flex flex-col items-center">
           <div className="w-full max-w-[560px]">
             <Chessboard
-              position={fen}
-              boardOrientation={boardOrientation}
-              boardWidth={560}
-              arePiecesDraggable={false}
-              customBoardStyle={{
-                borderRadius: '8px',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+              options={{
+                position: fen,
+                boardOrientation: boardOrientation as 'white' | 'black',
+                allowDragging: false,
+                boardStyle: {
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+                },
+                darkSquareStyle: { backgroundColor: '#b58863' },
+                lightSquareStyle: { backgroundColor: '#f0d9b5' },
               }}
-              customDarkSquareStyle={{ backgroundColor: '#b58863' }}
-              customLightSquareStyle={{ backgroundColor: '#f0d9b5' }}
             />
           </div>
 

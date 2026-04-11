@@ -4,7 +4,7 @@ import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSocket, useSocketEvent } from '@/hooks/useSocket';
-import { Flag, Handshake, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Flag, Handshake, Clock } from 'lucide-react';
 
 interface GameData {
   id: string;
@@ -105,8 +105,8 @@ export default function Game() {
   useSocketEvent('game:draw_offered', handleDrawOffered);
   useSocketEvent('game:state', handleGameState);
 
-  function onDrop(sourceSquare: string, targetSquare: string): boolean {
-    if (gameOver) return false;
+  function onDrop({ sourceSquare, targetSquare }: { piece: unknown; sourceSquare: string; targetSquare: string | null }): boolean {
+    if (gameOver || !targetSquare) return false;
 
     const isMyTurn =
       (chess.turn() === 'w' && myColor === 'white') ||
@@ -208,16 +208,17 @@ export default function Game() {
           {/* Chess Board */}
           <div className="w-full max-w-[560px]">
             <Chessboard
-              position={fen}
-              onPieceDrop={onDrop}
-              boardOrientation={myColor}
-              boardWidth={560}
-              customBoardStyle={{
-                borderRadius: '8px',
-                boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+              options={{
+                position: fen,
+                onPieceDrop: onDrop,
+                boardOrientation: myColor,
+                boardStyle: {
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+                },
+                darkSquareStyle: { backgroundColor: '#b58863' },
+                lightSquareStyle: { backgroundColor: '#f0d9b5' },
               }}
-              customDarkSquareStyle={{ backgroundColor: '#b58863' }}
-              customLightSquareStyle={{ backgroundColor: '#f0d9b5' }}
             />
           </div>
 

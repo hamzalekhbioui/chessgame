@@ -54,6 +54,9 @@ export function setupSocketHandlers(io: Server) {
     // Notify friends user is online
     notifyFriendsOnlineStatus(io, userId, true);
 
+    // Send this user the list of friends who are already online
+    sendOnlineFriends(socket, userId);
+
     // Rejoin active game if any
     const existingGame = getPlayerGame(userId);
     if (existingGame) {
@@ -328,6 +331,28 @@ async function notifyFriendsOnlineStatus(io: Server, userId: string, isOnline: b
         io.to(sid).emit(event, { userId });
       }
     }
+  }
+}
+
+async function sendOnlineFriends(socket: Socket, userId: string) {
+  const { data: friendships } = await supabase
+    .from('friendships')
+    .select('sender_id, receiver_id')
+    .eq('status', 'accepted')
+    .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
+
+  if (!friendships) return;
+
+  const onlineFriendIds: string[] = [];
+  for (const f of friendships) {
+    const friendId = f.sender_id === userId ? f.receiver_id : f.sender_id;
+    if (onlineUsers.has(friendId)) {
+      onlineFriendIds.push(friendId);
+    }
+  }
+
+  if (onlineFriendIds.length > 0) {
+    socket.emit('friends:online_list', { userIds: onlineFriendIds });
   }
 }
 
