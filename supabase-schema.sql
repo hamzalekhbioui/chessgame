@@ -110,3 +110,24 @@ CREATE POLICY "Users can view moves of own games" ON moves FOR SELECT
             AND (games.white_id = auth.uid() OR games.black_id = auth.uid())
         )
     );
+
+
+-- Allow service role and authenticated users to insert into users table
+CREATE POLICY "Allow insert for users" ON users FOR INSERT WITH CHECK (true);
+
+-- Allow inserts on all tables from server (service role bypasses, but just in case)
+CREATE POLICY "Allow insert for friendships" ON friendships FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS "Users can insert friendships" ON friendships;
+
+CREATE POLICY "Allow insert for games" ON games FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow insert for moves" ON moves FOR INSERT WITH CHECK (true);
+
+-- Allow updates
+CREATE POLICY "Allow update for users" ON users FOR UPDATE USING (true);
+DROP POLICY IF EXISTS "Users can update own record" ON users;
+
+CREATE POLICY "Allow update for friendships" ON friendships FOR UPDATE USING (true);
+CREATE POLICY "Allow update for games" ON games FOR UPDATE USING (true);
+
+-- Allow deletes for friendships
+CREATE POLICY "Allow delete for friendships" ON friendships FOR DELETE USING (true);

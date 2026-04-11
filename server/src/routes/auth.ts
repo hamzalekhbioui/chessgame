@@ -55,9 +55,10 @@ router.post('/register', async (req: Request, res: Response) => {
     .single();
 
   if (dbError) {
+    console.error('DB insert error:', dbError);
     // Cleanup: delete auth user if DB insert fails
     await supabase.auth.admin.deleteUser(authData.user.id);
-    res.status(500).json({ success: false, error: 'Failed to create user profile' });
+    res.status(500).json({ success: false, error: `Failed to create user profile: ${dbError.message}` });
     return;
   }
 
