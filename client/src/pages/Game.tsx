@@ -32,6 +32,8 @@ export default function Game() {
   const [gameOver, setGameOver] = useState<{ result: string; reason: string } | null>(null);
   const [drawOffered, setDrawOffered] = useState(false);
   const [drawReceived, setDrawReceived] = useState(false);
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [legalMoves, setLegalMoves] = useState<{ to: string; isCapture: boolean; isSpecial: boolean }[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Initialize from navigation state
@@ -105,34 +107,121 @@ export default function Game() {
   useSocketEvent('game:draw_offered', handleDrawOffered);
   useSocketEvent('game:state', handleGameState);
 
+  const clearSelection = useCallback(() => {
+    setSelectedSquare(null);
+    setLegalMoves([]);
+  }, []);
+
+  const selectSquare = useCallback(
+    (square: string) => {
+      const piece = chess.get(square as any);
+      if (!piece) return;
+
+      // Only allow selecting own-color pieces on your turn
+      const myTurnColor = chess.turn();
+      const myColorChar = myColor === 'white' ? 'w' : 'b';
+      if (piece.color !== myColorChar || myTurnColor !== myColorChar) return;
+
+      const verboseMoves = chess.moves({ square: square as any, verbose: true }) as any[];
+      const computed = verboseMoves.map((m) => ({
+        to: m.to as string,
+        // 'c' = capture, 'e' = en passant
+        isCapture: m.flags.includes('c') || m.flags.includes('e'),
+        // 'k' = kingside castle, 'q' = queenside, 'p' = promotion, 'e' = en passant
+        isSpecial:
+          m.flags.includes('k') ||
+          m.flags.includes('q') ||
+          m.flags.includes('p') ||
+          m.flags.includes('e'),
+      }));
+
+      setSelectedSquare(square);
+      setLegalMoves(computed);
+    },
+    [chess, myColor]
+  );
+
+  const attemptMove = useCallback(
+    (from: string, to: string): boolean => {
+      if (gameOver) return false;
+
+      const isMyTurn =
+        (chess.turn() === 'w' && myColor === 'white') ||
+        (chess.turn() === 'b' && myColor === 'black');
+      if (!isMyTurn) return false;
+
+      const move = chess.move({ from, to, promotion: 'q' });
+      if (!move) return false;
+
+      setFen(chess.fen());
+      setMoves((prev) => [...prev, `${from}${to}`]);
+      clearSelection();
+
+      socket.emit('game:move', { gameId, move: `${from}${to}` });
+      return true;
+    },
+    [chess, gameOver, myColor, gameId, socket, clearSelection]
+  );
+
   function onDrop({ sourceSquare, targetSquare }: { piece: unknown; sourceSquare: string; targetSquare: string | null }): boolean {
-    if (gameOver || !targetSquare) return false;
+    if (!targetSquare) return false;
+    return attemptMove(sourceSquare, targetSquare);
+  }
 
-    const isMyTurn =
-      (chess.turn() === 'w' && myColor === 'white') ||
-      (chess.turn() === 'b' && myColor === 'black');
+  const onSquareClick = useCallback(
+    ({ square }: { piece: unknown; square: string }) => {
+      // If clicking a legal target, play the move
+      if (selectedSquare && legalMoves.some((m) => m.to === square)) {
+        attemptMove(selectedSquare, square);
+        return;
+      }
 
-    if (!isMyTurn) return false;
+      // If clicking the same square, deselect
+      if (selectedSquare === square) {
+        clearSelection();
+        return;
+      }
 
-    // Try the move locally
-    const move = chess.move({
-      from: sourceSquare,
-      to: targetSquare,
-      promotion: 'q', // auto-promote to queen
-    });
+      // Otherwise, try to select this square
+      selectSquare(square);
+    },
+    [selectedSquare, legalMoves, attemptMove, clearSelection, selectSquare]
+  );
 
-    if (!move) return false;
+  // Clear selection when the position updates from the server (opponent's move)
+  useEffect(() => {
+    clearSelection();
+  }, [fen, clearSelection]);
 
-    setFen(chess.fen());
-    setMoves((prev) => [...prev, `${sourceSquare}${targetSquare}`]);
-
-    // Send to server
-    socket.emit('game:move', {
-      gameId,
-      move: `${sourceSquare}${targetSquare}`,
-    });
-
-    return true;
+  // Compute square styles for highlighting
+  const squareStyles: Record<string, React.CSSProperties> = {};
+  if (selectedSquare) {
+    squareStyles[selectedSquare] = {
+      background: 'rgba(255, 217, 102, 0.55)',
+    };
+  }
+  for (const m of legalMoves) {
+    const targetPiece = chess.get(m.to as any);
+    if (targetPiece || m.isCapture) {
+      // Capture: ring around the square
+      squareStyles[m.to] = {
+        background:
+          'radial-gradient(circle, transparent 58%, rgba(220, 50, 50, 0.55) 60%)',
+        borderRadius: '0',
+      };
+    } else if (m.isSpecial) {
+      // Castling / promotion / en passant empty squares — gold dot
+      squareStyles[m.to] = {
+        background:
+          'radial-gradient(circle, rgba(255, 200, 0, 0.75) 22%, transparent 24%)',
+      };
+    } else {
+      // Normal move: small dot
+      squareStyles[m.to] = {
+        background:
+          'radial-gradient(circle, rgba(0, 0, 0, 0.25) 22%, transparent 24%)',
+      };
+    }
   }
 
   const resign = () => {
@@ -211,7 +300,9 @@ export default function Game() {
               options={{
                 position: fen,
                 onPieceDrop: onDrop,
+                onSquareClick: onSquareClick,
                 boardOrientation: myColor,
+                squareStyles: squareStyles,
                 boardStyle: {
                   borderRadius: '8px',
                   boxShadow: '0 4px 20px rgba(0,0,0,0.5)',

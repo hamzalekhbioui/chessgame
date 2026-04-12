@@ -67,4 +67,10 @@ export const api = {
   getGames: (page = 1) => request(`/games?page=${page}`),
 
   getGame: (id: string) => request(`/games/${id}`),
+
+  analyzeGame: (id: string, depth = 14) =>
+    request(`/games/${id}/analyze`, {
+      method: 'POST',
+      body: JSON.stringify({ depth }),
+    }),
 };

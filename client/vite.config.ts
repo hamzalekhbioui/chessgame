@@ -12,8 +12,14 @@ export default defineConfig({
     },
   },
   server: {
+    host: true, // listen on all interfaces, required for ngrok
     proxy: {
       '/api': 'http://localhost:3001',
+      '/socket.io': {
+        target: 'http://localhost:3001',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 })

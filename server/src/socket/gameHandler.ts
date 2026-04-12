@@ -42,7 +42,8 @@ export function setupSocketHandlers(io: Server) {
 
   io.on('connection', (socket: Socket) => {
     const userId: string = socket.data.userId;
-    console.log(`User connected: ${userId} (socket: ${socket.id})`);
+    const origin = socket.handshake.headers.origin || 'unknown';
+    console.log(`[SOCKET] Connected userId=${userId} socketId=${socket.id} origin=${origin}`);
 
     // Track online status
     if (!onlineUsers.has(userId)) {
@@ -50,6 +51,8 @@ export function setupSocketHandlers(io: Server) {
     }
     onlineUsers.get(userId)!.add(socket.id);
     socketUserMap.set(socket.id, userId);
+
+    console.log(`[SOCKET] onlineUsers now: [${Array.from(onlineUsers.keys()).join(', ')}]`);
 
     // Notify friends user is online
     notifyFriendsOnlineStatus(io, userId, true);
@@ -313,15 +316,20 @@ async function checkFriendship(userId1: string, userId2: string): Promise<boolea
 
 async function notifyFriendsOnlineStatus(io: Server, userId: string, isOnline: boolean) {
   // Get all friends
-  const { data: friendships } = await supabase
+  const { data: friendships, error } = await supabase
     .from('friendships')
     .select('sender_id, receiver_id')
     .eq('status', 'accepted')
     .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
 
+  if (error) {
+    console.error(`[PRESENCE] notifyFriendsOnlineStatus query error:`, error.message);
+    return;
+  }
   if (!friendships) return;
 
   const event = isOnline ? 'friend:online' : 'friend:offline';
+  let notified = 0;
 
   for (const f of friendships) {
     const friendId = f.sender_id === userId ? f.receiver_id : f.sender_id;
@@ -329,31 +337,43 @@ async function notifyFriendsOnlineStatus(io: Server, userId: string, isOnline: b
     if (friendSockets) {
       for (const sid of friendSockets) {
         io.to(sid).emit(event, { userId });
+        notified++;
       }
     }
   }
+
+  console.log(
+    `[PRESENCE] ${userId} ${event}: notified ${notified} socket(s) across ${friendships.length} friendship(s)`
+  );
 }
 
 async function sendOnlineFriends(socket: Socket, userId: string) {
-  const { data: friendships } = await supabase
+  const { data: friendships, error } = await supabase
     .from('friendships')
     .select('sender_id, receiver_id')
     .eq('status', 'accepted')
     .or(`sender_id.eq.${userId},receiver_id.eq.${userId}`);
 
-  if (!friendships) return;
+  if (error) {
+    console.error(`[PRESENCE] sendOnlineFriends query error for ${userId}:`, error.message);
+  }
 
   const onlineFriendIds: string[] = [];
-  for (const f of friendships) {
-    const friendId = f.sender_id === userId ? f.receiver_id : f.sender_id;
-    if (onlineUsers.has(friendId)) {
-      onlineFriendIds.push(friendId);
+  if (friendships) {
+    for (const f of friendships) {
+      const friendId = f.sender_id === userId ? f.receiver_id : f.sender_id;
+      if (onlineUsers.has(friendId)) {
+        onlineFriendIds.push(friendId);
+      }
     }
   }
 
-  if (onlineFriendIds.length > 0) {
-    socket.emit('friends:online_list', { userIds: onlineFriendIds });
-  }
+  console.log(
+    `[PRESENCE] sendOnlineFriends to ${userId}: ${friendships?.length || 0} friendships, ${onlineFriendIds.length} online: [${onlineFriendIds.join(', ')}]`
+  );
+
+  // Always emit, even with empty list, so client has an authoritative state
+  socket.emit('friends:online_list', { userIds: onlineFriendIds });
 }
 
 export function getOnlineUsers(): string[] {

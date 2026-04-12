@@ -8,6 +8,21 @@ export function getSocket(): Socket {
     socket = io(window.location.origin, {
       auth: { token },
       autoConnect: false,
+      transports: ['websocket', 'polling'],
+      // Bypass ngrok's free-tier browser interstitial on polling fallback
+      extraHeaders: {
+        'ngrok-skip-browser-warning': 'true',
+      },
+    });
+
+    socket.on('connect', () => {
+      console.log('[SOCKET] connected:', socket?.id);
+    });
+    socket.on('connect_error', (err) => {
+      console.error('[SOCKET] connect_error:', err.message);
+    });
+    socket.on('disconnect', (reason) => {
+      console.log('[SOCKET] disconnected:', reason);
     });
   }
   return socket;
