@@ -16,7 +16,7 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<string | null>;
   register: (email: string, password: string, username: string) => Promise<string | null>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -25,27 +25,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // On mount: restore session from the httpOnly cookie via /api/auth/me
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      api.getMe().then((res: any) => {
-        if (res.success && res.data) {
-          setUser(res.data);
-          connectSocket();
-        } else {
-          localStorage.removeItem('token');
-        }
-        setLoading(false);
-      });
-    } else {
+    api.getMe().then((res: any) => {
+      if (res.success && res.data) {
+        setUser(res.data);
+        connectSocket();
+      }
       setLoading(false);
-    }
+    });
   }, []);
 
   const login = useCallback(async (email: string, password: string): Promise<string | null> => {
     const res: any = await api.login({ email, password });
     if (res.success && res.data) {
-      localStorage.setItem('token', res.data.token);
       setUser(res.data.user);
       connectSocket();
       return null;
@@ -56,7 +49,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const register = useCallback(async (email: string, password: string, username: string): Promise<string | null> => {
     const res: any = await api.register({ email, password, username });
     if (res.success && res.data) {
-      localStorage.setItem('token', res.data.token);
       setUser(res.data.user);
       connectSocket();
       return null;
@@ -64,8 +56,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return res.error || 'Registration failed';
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem('token');
+  const logout = useCallback(async () => {
+    await api.logout();
     setUser(null);
     disconnectSocket();
   }, []);

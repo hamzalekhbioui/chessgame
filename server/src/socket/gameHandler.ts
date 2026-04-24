@@ -25,10 +25,20 @@ const onlineUsers = new Map<string, Set<string>>(); // userId -> Set<socketId>
 const challenges = new Map<string, Challenge>(); // challengeId -> Challenge
 const socketUserMap = new Map<string, string>(); // socketId -> userId
 
+function parseCookieToken(cookieHeader: string | undefined): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === 'token') return decodeURIComponent(rest.join('='));
+  }
+  return undefined;
+}
+
 export function setupSocketHandlers(io: Server) {
-  // Auth middleware for sockets
+  // Auth middleware — prefer httpOnly cookie, fall back to handshake.auth.token
   io.use((socket, next) => {
-    const token = socket.handshake.auth.token;
+    const cookieToken = parseCookieToken(socket.handshake.headers.cookie);
+    const token = cookieToken || socket.handshake.auth?.token;
     if (!token) return next(new Error('No token provided'));
 
     try {
@@ -60,13 +70,12 @@ export function setupSocketHandlers(io: Server) {
     // Send this user the list of friends who are already online
     sendOnlineFriends(socket, userId);
 
-    // Rejoin active game if any
+    // Rejoin active game if any (handles page reload reconnect)
     const existingGame = getPlayerGame(userId);
     if (existingGame) {
       const gameRoom = `game:${existingGame.id}`;
       socket.join(gameRoom);
-      const state = getGameState(existingGame.id);
-      socket.emit('game:state', state);
+      sendFullGameState(io, socket, existingGame.id, userId);
     }
 
     // ── Challenge Handlers ──
@@ -74,14 +83,12 @@ export function setupSocketHandlers(io: Server) {
     socket.on('challenge:send', async (data: { toUserId: string; timeControl: string }) => {
       const { toUserId, timeControl } = data;
 
-      // Verify friendship
       const areFriends = await checkFriendship(userId, toUserId);
       if (!areFriends) {
         socket.emit('error', { message: 'You can only challenge friends' });
         return;
       }
 
-      // Check if either player is already in a game
       if (getPlayerGame(userId) || getPlayerGame(toUserId)) {
         socket.emit('error', { message: 'One of the players is already in a game' });
         return;
@@ -97,14 +104,12 @@ export function setupSocketHandlers(io: Server) {
       };
       challenges.set(challengeId, challenge);
 
-      // Get sender info
       const { data: sender } = await supabase
         .from('users')
         .select('id, username, rating, avatar_url')
         .eq('id', userId)
         .single();
 
-      // Send to target user's sockets
       const targetSockets = onlineUsers.get(toUserId);
       if (targetSockets) {
         for (const sid of targetSockets) {
@@ -129,7 +134,6 @@ export function setupSocketHandlers(io: Server) {
 
       challenges.delete(data.challengeId);
 
-      // Randomly assign colors
       const isWhite = Math.random() < 0.5;
       const whiteId = isWhite ? challenge.fromUserId : challenge.toUserId;
       const blackId = isWhite ? challenge.toUserId : challenge.fromUserId;
@@ -137,7 +141,6 @@ export function setupSocketHandlers(io: Server) {
       const game = createGame(whiteId, blackId, challenge.timeControl);
       const gameRoom = `game:${game.id}`;
 
-      // Join both players to game room
       const challengerSockets = onlineUsers.get(challenge.fromUserId);
       const accepterSockets = onlineUsers.get(challenge.toUserId);
 
@@ -154,9 +157,10 @@ export function setupSocketHandlers(io: Server) {
         }
       }
 
-      // Fetch player data
-      const { data: whitePlr } = await supabase.from('users').select('id, username, rating, avatar_url').eq('id', whiteId).single();
-      const { data: blackPlr } = await supabase.from('users').select('id, username, rating, avatar_url').eq('id', blackId).single();
+      const [{ data: whitePlr }, { data: blackPlr }] = await Promise.all([
+        supabase.from('users').select('id, username, rating, avatar_url').eq('id', whiteId).single(),
+        supabase.from('users').select('id, username, rating, avatar_url').eq('id', blackId).single(),
+      ]);
 
       const gameData = {
         id: game.id,
@@ -167,16 +171,20 @@ export function setupSocketHandlers(io: Server) {
         blackTime: game.blackTime,
       };
 
-      // Emit start to white
       if (challengerSockets) {
         for (const sid of challengerSockets) {
-          io.to(sid).emit('game:start', { game: gameData, color: challenge.fromUserId === whiteId ? 'white' : 'black' });
+          io.to(sid).emit('game:start', {
+            game: gameData,
+            color: challenge.fromUserId === whiteId ? 'white' : 'black',
+          });
         }
       }
-      // Emit start to black
       if (accepterSockets) {
         for (const sid of accepterSockets) {
-          io.to(sid).emit('game:start', { game: gameData, color: challenge.toUserId === whiteId ? 'white' : 'black' });
+          io.to(sid).emit('game:start', {
+            game: gameData,
+            color: challenge.toUserId === whiteId ? 'white' : 'black',
+          });
         }
       }
     });
@@ -197,6 +205,15 @@ export function setupSocketHandlers(io: Server) {
 
     // ── Game Handlers ──
 
+    // Client requests full state (e.g. after page reload)
+    socket.on('game:request_state', async () => {
+      const game = getPlayerGame(userId);
+      if (!game) return;
+      const gameRoom = `game:${game.id}`;
+      socket.join(gameRoom);
+      await sendFullGameState(io, socket, game.id, userId);
+    });
+
     socket.on('game:move', (data: { gameId: string; move: string }) => {
       const result = makeMove(data.gameId, userId, data.move);
 
@@ -207,8 +224,9 @@ export function setupSocketHandlers(io: Server) {
 
       const gameRoom = `game:${data.gameId}`;
 
+      // Broadcast SAN notation so the moves list is human-readable on all clients
       io.to(gameRoom).emit('game:move', {
-        move: data.move,
+        move: result.moveNotation!, // SAN (e.g. "Nf3"), not UCI ("g1f3")
         fen: result.fen!,
         moveNumber: getActiveGame(data.gameId)?.moves.length || 0,
         whiteTime: result.whiteTime!,
@@ -276,7 +294,6 @@ export function setupSocketHandlers(io: Server) {
       }
       socketUserMap.delete(socket.id);
 
-      // Notify opponent if in a game
       const game = getPlayerGame(userId);
       if (game && !onlineUsers.has(userId)) {
         const opponentId = userId === game.whiteId ? game.blackId : game.whiteId;
@@ -294,11 +311,28 @@ export function setupSocketHandlers(io: Server) {
   setInterval(() => {
     const now = Date.now();
     for (const [id, challenge] of challenges) {
-      if (now - challenge.createdAt > 60000) {
+      if (now - challenge.createdAt > 60_000) {
         challenges.delete(id);
       }
     }
-  }, 60000);
+  }, 60_000);
+}
+
+async function sendFullGameState(io: Server, socket: Socket, gameId: string, userId: string) {
+  const state = getGameState(gameId);
+  if (!state) return;
+
+  const [{ data: whitePlr }, { data: blackPlr }] = await Promise.all([
+    supabase.from('users').select('id, username, rating, avatar_url').eq('id', state.whiteId).single(),
+    supabase.from('users').select('id, username, rating, avatar_url').eq('id', state.blackId).single(),
+  ]);
+
+  socket.emit('game:state', {
+    ...state,
+    white: whitePlr,
+    black: blackPlr,
+    color: userId === state.whiteId ? 'white' : 'black',
+  });
 }
 
 async function checkFriendship(userId1: string, userId2: string): Promise<boolean> {
@@ -315,7 +349,6 @@ async function checkFriendship(userId1: string, userId2: string): Promise<boolea
 }
 
 async function notifyFriendsOnlineStatus(io: Server, userId: string, isOnline: boolean) {
-  // Get all friends
   const { data: friendships, error } = await supabase
     .from('friendships')
     .select('sender_id, receiver_id')
@@ -372,7 +405,6 @@ async function sendOnlineFriends(socket: Socket, userId: string) {
     `[PRESENCE] sendOnlineFriends to ${userId}: ${friendships?.length || 0} friendships, ${onlineFriendIds.length} online: [${onlineFriendIds.join(', ')}]`
   );
 
-  // Always emit, even with empty list, so client has an authoritative state
   socket.emit('friends:online_list', { userIds: onlineFriendIds });
 }
 

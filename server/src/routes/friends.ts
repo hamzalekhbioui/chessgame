@@ -1,9 +1,13 @@
 import { Router, Response } from 'express';
+import { z } from 'zod';
 import { supabase } from '../supabase.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 router.use(authMiddleware);
+
+const uuidSchema = z.string().uuid('Invalid ID');
+const usernameSchema = z.string().min(3).max(32).regex(/^[a-zA-Z0-9_]+$/);
 
 // GET /api/friends — list accepted friends
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -85,14 +89,14 @@ router.get('/sent', async (req: AuthRequest, res: Response) => {
 // POST /api/friends/request — send a friend request
 router.post('/request', async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const { username } = req.body;
 
-  if (!username) {
-    res.status(400).json({ success: false, error: 'Username is required' });
+  const parsed = z.object({ username: usernameSchema }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: parsed.error.issues[0].message });
     return;
   }
+  const { username } = parsed.data;
 
-  // Find the target user
   const { data: target } = await supabase
     .from('users')
     .select('id, username')
@@ -109,7 +113,6 @@ router.post('/request', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  // Check if friendship already exists (either direction)
   const { data: existing } = await supabase
     .from('friendships')
     .select('id, status')
@@ -124,7 +127,6 @@ router.post('/request', async (req: AuthRequest, res: Response) => {
     } else if (existing.status === 'pending') {
       res.status(409).json({ success: false, error: 'Friend request already pending' });
     } else {
-      // Re-send after rejection — update existing row
       await supabase
         .from('friendships')
         .update({ status: 'pending', sender_id: userId, receiver_id: target.id, updated_at: new Date().toISOString() })
@@ -149,7 +151,13 @@ router.post('/request', async (req: AuthRequest, res: Response) => {
 // POST /api/friends/accept/:id
 router.post('/accept/:id', async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const friendshipId = req.params.id;
+
+  const idParsed = uuidSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    res.status(400).json({ success: false, error: 'Invalid friendship ID' });
+    return;
+  }
+  const friendshipId = idParsed.data;
 
   const { data: friendship } = await supabase
     .from('friendships')
@@ -180,7 +188,13 @@ router.post('/accept/:id', async (req: AuthRequest, res: Response) => {
 // POST /api/friends/reject/:id
 router.post('/reject/:id', async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const friendshipId = req.params.id;
+
+  const idParsed = uuidSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    res.status(400).json({ success: false, error: 'Invalid friendship ID' });
+    return;
+  }
+  const friendshipId = idParsed.data;
 
   const { data: friendship } = await supabase
     .from('friendships')
@@ -211,7 +225,13 @@ router.post('/reject/:id', async (req: AuthRequest, res: Response) => {
 // DELETE /api/friends/:id — remove a friend
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const friendshipId = req.params.id;
+
+  const idParsed = uuidSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    res.status(400).json({ success: false, error: 'Invalid friendship ID' });
+    return;
+  }
+  const friendshipId = idParsed.data;
 
   const { data: friendship } = await supabase
     .from('friendships')

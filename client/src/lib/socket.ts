@@ -4,12 +4,10 @@ let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    const token = localStorage.getItem('token');
     socket = io(window.location.origin, {
-      auth: { token },
+      withCredentials: true, // send the httpOnly session cookie for auth
       autoConnect: false,
       transports: ['websocket', 'polling'],
-      // Bypass ngrok's free-tier browser interstitial on polling fallback
       extraHeaders: {
         'ngrok-skip-browser-warning': 'true',
       },
@@ -31,7 +29,6 @@ export function getSocket(): Socket {
 export function connectSocket() {
   const s = getSocket();
   if (!s.connected) {
-    s.auth = { token: localStorage.getItem('token') };
     s.connect();
   }
 }

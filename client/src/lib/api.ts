@@ -4,20 +4,15 @@ async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<{ success: boolean; data?: T; error?: string }> {
-  const token = localStorage.getItem('token');
-
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) || {}),
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
   const res = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
+    credentials: 'include', // always send the httpOnly session cookie
   });
 
   const json = await res.json();
@@ -36,6 +31,8 @@ export const api = {
 
   login: (data: { email: string; password: string }) =>
     request('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+
+  logout: () => request('/auth/logout', { method: 'POST' }),
 
   getMe: () => request('/auth/me'),
 

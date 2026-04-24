@@ -36,7 +36,7 @@ export default function Game() {
   const [legalMoves, setLegalMoves] = useState<{ to: string; isCapture: boolean; isSpecial: boolean }[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Initialize from navigation state
+  // Initialize from navigation state (first load via challenge accept)
   useEffect(() => {
     if (location.state) {
       const { game, color } = location.state as { game: GameData; color: 'white' | 'black' };
@@ -44,10 +44,14 @@ export default function Game() {
       setMyColor(color);
       setWhiteTime(game.whiteTime);
       setBlackTime(game.blackTime);
+    } else {
+      // Page reload: request full state from server (server sends game:state on reconnect,
+      // but also emit explicitly in case the socket was already connected)
+      socket.emit('game:request_state');
     }
-  }, [location.state]);
+  }, [location.state, socket]);
 
-  // Client-side clock tick
+  // Client-side clock tick (speculative; server times are authoritative on each move)
   useEffect(() => {
     if (gameOver || !gameData) return;
 
@@ -65,12 +69,15 @@ export default function Game() {
     };
   }, [chess, gameOver, gameData, fen]);
 
+  // Server broadcast: another player moved (or our own move echoed back)
+  // The server now emits SAN notation (e.g. "Nf3"), not UCI ("g1f3")
   const handleMove = useCallback(
     (data: { move: string; fen: string; whiteTime: number; blackTime: number }) => {
       chess.load(data.fen);
       setFen(data.fen);
       setWhiteTime(data.whiteTime);
       setBlackTime(data.blackTime);
+      // data.move is SAN — add once here for ALL clients (mover + opponent)
       setMoves((prev) => [...prev, data.move]);
       setDrawReceived(false);
     },
@@ -89,14 +96,27 @@ export default function Game() {
     setDrawReceived(true);
   }, []);
 
+  // Handles both reconnect state and explicit game:request_state response
   const handleGameState = useCallback(
     (data: any) => {
-      if (data) {
-        chess.load(data.fen);
-        setFen(data.fen);
-        setWhiteTime(data.whiteTime);
-        setBlackTime(data.blackTime);
-        setMoves(data.moves || []);
+      if (!data) return;
+      chess.load(data.fen);
+      setFen(data.fen);
+      setWhiteTime(data.whiteTime);
+      setBlackTime(data.blackTime);
+      setMoves(data.moves || []);
+
+      // Full state (from sendFullGameState) includes player info and color
+      if (data.white && data.black) {
+        setGameData({
+          id: data.id,
+          white: data.white,
+          black: data.black,
+          timeControl: data.timeControl,
+          whiteTime: data.whiteTime,
+          blackTime: data.blackTime,
+        });
+        if (data.color) setMyColor(data.color);
       }
     },
     [chess]
@@ -117,7 +137,6 @@ export default function Game() {
       const piece = chess.get(square as any);
       if (!piece) return;
 
-      // Only allow selecting own-color pieces on your turn
       const myTurnColor = chess.turn();
       const myColorChar = myColor === 'white' ? 'w' : 'b';
       if (piece.color !== myColorChar || myTurnColor !== myColorChar) return;
@@ -125,9 +144,7 @@ export default function Game() {
       const verboseMoves = chess.moves({ square: square as any, verbose: true }) as any[];
       const computed = verboseMoves.map((m) => ({
         to: m.to as string,
-        // 'c' = capture, 'e' = en passant
         isCapture: m.flags.includes('c') || m.flags.includes('e'),
-        // 'k' = kingside castle, 'q' = queenside, 'p' = promotion, 'e' = en passant
         isSpecial:
           m.flags.includes('k') ||
           m.flags.includes('q') ||
@@ -153,8 +170,10 @@ export default function Game() {
       const move = chess.move({ from, to, promotion: 'q' });
       if (!move) return false;
 
+      // Show the moved position immediately (optimistic UI)
+      // Do NOT push to moves[] here — the server broadcasts back the SAN
+      // via game:move and handleMove adds it for all clients uniformly.
       setFen(chess.fen());
-      setMoves((prev) => [...prev, `${from}${to}`]);
       clearSelection();
 
       socket.emit('game:move', { gameId, move: `${from}${to}` });
@@ -170,25 +189,22 @@ export default function Game() {
 
   const onSquareClick = useCallback(
     ({ square }: { piece: unknown; square: string }) => {
-      // If clicking a legal target, play the move
       if (selectedSquare && legalMoves.some((m) => m.to === square)) {
         attemptMove(selectedSquare, square);
         return;
       }
 
-      // If clicking the same square, deselect
       if (selectedSquare === square) {
         clearSelection();
         return;
       }
 
-      // Otherwise, try to select this square
       selectSquare(square);
     },
     [selectedSquare, legalMoves, attemptMove, clearSelection, selectSquare]
   );
 
-  // Clear selection when the position updates from the server (opponent's move)
+  // Clear selection when position updates from opponent's move
   useEffect(() => {
     clearSelection();
   }, [fen, clearSelection]);
@@ -203,20 +219,17 @@ export default function Game() {
   for (const m of legalMoves) {
     const targetPiece = chess.get(m.to as any);
     if (targetPiece || m.isCapture) {
-      // Capture: ring around the square
       squareStyles[m.to] = {
         background:
           'radial-gradient(circle, transparent 58%, rgba(220, 50, 50, 0.55) 60%)',
         borderRadius: '0',
       };
     } else if (m.isSpecial) {
-      // Castling / promotion / en passant empty squares — gold dot
       squareStyles[m.to] = {
         background:
           'radial-gradient(circle, rgba(255, 200, 0, 0.75) 22%, transparent 24%)',
       };
     } else {
-      // Normal move: small dot
       squareStyles[m.to] = {
         background:
           'radial-gradient(circle, rgba(0, 0, 0, 0.25) 22%, transparent 24%)',
@@ -347,7 +360,7 @@ export default function Game() {
                   ? 'You Won!'
                   : 'You Lost'}
               </div>
-              <div className="text-sm text-amber-400 capitalize">{gameOver.reason.replace('_', ' ')}</div>
+              <div className="text-sm text-amber-400 capitalize">{gameOver.reason.replace(/_/g, ' ')}</div>
               <button
                 onClick={() => navigate('/')}
                 className="mt-3 px-6 py-2 bg-amber-500 hover:bg-amber-600 text-black font-medium rounded-lg transition cursor-pointer"
@@ -378,7 +391,7 @@ export default function Game() {
             </div>
           )}
 
-          {/* Move History */}
+          {/* Move History — now shows SAN (e.g. "1. e4 e5  2. Nf3") */}
           <div className="bg-[#16213e] rounded-xl p-4">
             <h3 className="text-white font-semibold mb-3">Moves</h3>
             <div className="max-h-80 overflow-y-auto space-y-1 text-sm font-mono">

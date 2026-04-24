@@ -56,10 +56,10 @@ CREATE TABLE IF NOT EXISTS moves (
     game_id         UUID REFERENCES games(id) ON DELETE CASCADE NOT NULL,
     move_number     INT NOT NULL,
     player_id       UUID REFERENCES users(id) NOT NULL,
-    notation        VARCHAR(10) NOT NULL,
+    notation        VARCHAR(10) NOT NULL,   -- SAN, e.g. "Nf3"
     fen_after       VARCHAR(100) NOT NULL,
-    time_spent      INT,
-    evaluation      FLOAT,
+    time_spent      INT,                    -- milliseconds
+    evaluation      FLOAT,                  -- pawns from white's perspective
     classification  VARCHAR(20) CHECK (classification IN ('best', 'excellent', 'good', 'inaccuracy', 'mistake', 'blunder')),
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
@@ -78,31 +78,64 @@ CREATE INDEX IF NOT EXISTS idx_games_completed ON games(created_at DESC) WHERE s
 
 CREATE INDEX IF NOT EXISTS idx_moves_game ON moves(game_id, move_number);
 
--- Row Level Security (RLS) Policies
--- Note: Since we use the service role key on the server, RLS is bypassed.
--- These policies are for extra safety if you ever use the anon key directly.
+-- ============================================
+-- Row Level Security (RLS)
+-- ============================================
+-- The server uses the service_role key which bypasses RLS entirely.
+-- These policies govern direct anon/authenticated client access, providing
+-- defence-in-depth. They do NOT grant broad write permissions because the
+-- server is the only authorised writer.
 
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE friendships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE games ENABLE ROW LEVEL SECURITY;
 ALTER TABLE moves ENABLE ROW LEVEL SECURITY;
 
--- Users: anyone can read, only own user can update
-CREATE POLICY "Users are viewable by everyone" ON users FOR SELECT USING (true);
-CREATE POLICY "Users can update own record" ON users FOR UPDATE USING (auth.uid() = id);
+-- ── Users ──
+-- Anyone can look up public profiles; only own row is editable.
+CREATE POLICY "users_select_all"
+    ON users FOR SELECT USING (true);
 
--- Friendships: involved users can read
-CREATE POLICY "Users can view own friendships" ON friendships FOR SELECT
+CREATE POLICY "users_update_own"
+    ON users FOR UPDATE USING (auth.uid() = id)
+    WITH CHECK (auth.uid() = id);
+
+-- Server (service role) handles INSERT — no anon insert policy needed.
+
+-- ── Friendships ──
+-- Users can only see friendships they are part of.
+CREATE POLICY "friendships_select_own"
+    ON friendships FOR SELECT
     USING (auth.uid() = sender_id OR auth.uid() = receiver_id);
-CREATE POLICY "Users can insert friendships" ON friendships FOR INSERT
+
+-- Users can only create friendship rows where they are the sender.
+CREATE POLICY "friendships_insert_as_sender"
+    ON friendships FOR INSERT
     WITH CHECK (auth.uid() = sender_id);
 
--- Games: involved users can read
-CREATE POLICY "Users can view own games" ON games FOR SELECT
+-- Users can update a friendship row only if they are the receiver
+-- (to accept/reject requests) or either party (to cancel their own request).
+CREATE POLICY "friendships_update_own"
+    ON friendships FOR UPDATE
+    USING (auth.uid() = sender_id OR auth.uid() = receiver_id);
+
+-- Either party can remove the friendship row.
+CREATE POLICY "friendships_delete_own"
+    ON friendships FOR DELETE
+    USING (auth.uid() = sender_id OR auth.uid() = receiver_id);
+
+-- ── Games ──
+-- Players can only read games they participated in.
+CREATE POLICY "games_select_own"
+    ON games FOR SELECT
     USING (auth.uid() = white_id OR auth.uid() = black_id);
 
--- Moves: anyone in the game can read
-CREATE POLICY "Users can view moves of own games" ON moves FOR SELECT
+-- No direct client writes to games — server (service role) does all mutations.
+
+-- ── Moves ──
+-- Players can read moves of their own games.
+CREATE POLICY "moves_select_own_game"
+    ON moves FOR SELECT
     USING (
         EXISTS (
             SELECT 1 FROM games
@@ -111,23 +144,4 @@ CREATE POLICY "Users can view moves of own games" ON moves FOR SELECT
         )
     );
 
-
--- Allow service role and authenticated users to insert into users table
-CREATE POLICY "Allow insert for users" ON users FOR INSERT WITH CHECK (true);
-
--- Allow inserts on all tables from server (service role bypasses, but just in case)
-CREATE POLICY "Allow insert for friendships" ON friendships FOR INSERT WITH CHECK (true);
-DROP POLICY IF EXISTS "Users can insert friendships" ON friendships;
-
-CREATE POLICY "Allow insert for games" ON games FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow insert for moves" ON moves FOR INSERT WITH CHECK (true);
-
--- Allow updates
-CREATE POLICY "Allow update for users" ON users FOR UPDATE USING (true);
-DROP POLICY IF EXISTS "Users can update own record" ON users;
-
-CREATE POLICY "Allow update for friendships" ON friendships FOR UPDATE USING (true);
-CREATE POLICY "Allow update for games" ON games FOR UPDATE USING (true);
-
--- Allow deletes for friendships
-CREATE POLICY "Allow delete for friendships" ON friendships FOR DELETE USING (true);
+-- No direct client writes to moves — server (service role) does all mutations.

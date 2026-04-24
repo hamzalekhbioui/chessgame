@@ -239,8 +239,15 @@ export function declineDraw(gameId: string, playerId: string): boolean {
 }
 
 async function finishGame(game: ActiveGame, result: GameResult, reason: GameResultReason) {
-  // Save to database
   const pgn = game.chess.pgn();
+
+  // Fetch actual ratings once — used for both the game record and Elo calculation
+  const [{ data: whiteUser }, { data: blackUser }] = await Promise.all([
+    supabase.from('users').select('rating').eq('id', game.whiteId).single(),
+    supabase.from('users').select('rating').eq('id', game.blackId).single(),
+  ]);
+  const whiteRating = whiteUser?.rating ?? 1200;
+  const blackRating = blackUser?.rating ?? 1200;
 
   try {
     await supabase.from('games').insert({
@@ -254,12 +261,11 @@ async function finishGame(game: ActiveGame, result: GameResult, reason: GameResu
       pgn,
       starting_fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
       final_fen: game.chess.fen(),
-      white_rating: 1200,
-      black_rating: 1200,
+      white_rating: whiteRating,
+      black_rating: blackRating,
       ended_at: new Date().toISOString(),
     });
 
-    // Save individual moves
     if (game.moves.length > 0) {
       const moveRows = game.moves.map((m, i) => ({
         game_id: game.id,
@@ -272,8 +278,7 @@ async function finishGame(game: ActiveGame, result: GameResult, reason: GameResu
       await supabase.from('moves').insert(moveRows);
     }
 
-    // Update ratings (simple Elo)
-    await updateRatings(game.whiteId, game.blackId, result);
+    await updateRatings(game.whiteId, game.blackId, result, whiteRating, blackRating);
   } catch (err) {
     console.error('Failed to save game:', err);
   }
@@ -284,14 +289,15 @@ async function finishGame(game: ActiveGame, result: GameResult, reason: GameResu
   playerGames.delete(game.blackId);
 }
 
-async function updateRatings(whiteId: string, blackId: string, result: GameResult) {
-  const { data: white } = await supabase.from('users').select('rating').eq('id', whiteId).single();
-  const { data: black } = await supabase.from('users').select('rating').eq('id', blackId).single();
-
-  if (!white || !black) return;
-
+async function updateRatings(
+  whiteId: string,
+  blackId: string,
+  result: GameResult,
+  whiteRating: number,
+  blackRating: number
+) {
   const K = 32;
-  const expectedWhite = 1 / (1 + Math.pow(10, (black.rating - white.rating) / 400));
+  const expectedWhite = 1 / (1 + Math.pow(10, (blackRating - whiteRating) / 400));
   const expectedBlack = 1 - expectedWhite;
 
   let scoreWhite: number;
@@ -299,11 +305,13 @@ async function updateRatings(whiteId: string, blackId: string, result: GameResul
   else if (result === 'black') scoreWhite = 0;
   else scoreWhite = 0.5;
 
-  const newWhiteRating = Math.round(white.rating + K * (scoreWhite - expectedWhite));
-  const newBlackRating = Math.round(black.rating + K * ((1 - scoreWhite) - expectedBlack));
+  const newWhiteRating = Math.round(whiteRating + K * (scoreWhite - expectedWhite));
+  const newBlackRating = Math.round(blackRating + K * ((1 - scoreWhite) - expectedBlack));
 
-  await supabase.from('users').update({ rating: newWhiteRating }).eq('id', whiteId);
-  await supabase.from('users').update({ rating: newBlackRating }).eq('id', blackId);
+  await Promise.all([
+    supabase.from('users').update({ rating: newWhiteRating }).eq('id', whiteId),
+    supabase.from('users').update({ rating: newBlackRating }).eq('id', blackId),
+  ]);
 }
 
 export function getGameState(gameId: string) {

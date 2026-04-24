@@ -1,4 +1,5 @@
 import { Router, Response } from 'express';
+import { z } from 'zod';
 import { supabase } from '../supabase.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { analyzeGame } from '../services/analysisService.js';
@@ -6,10 +7,15 @@ import { analyzeGame } from '../services/analysisService.js';
 const router = Router();
 router.use(authMiddleware);
 
+const uuidSchema = z.string().uuid('Invalid game ID');
+const pageSchema = z.coerce.number().int().min(1).default(1);
+const depthSchema = z.coerce.number().int().min(8).max(20).default(14);
+
 // GET /api/games — list user's completed games
 router.get('/', async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const page = parseInt(req.query.page as string) || 1;
+  const pageResult = pageSchema.safeParse(req.query.page);
+  const page = pageResult.success ? pageResult.data : 1;
   const limit = 20;
   const offset = (page - 1) * limit;
 
@@ -46,7 +52,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
 // GET /api/games/:id — get a specific game with moves
 router.get('/:id', async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  const idParsed = uuidSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    res.status(400).json({ success: false, error: 'Invalid game ID' });
+    return;
+  }
 
   const { data: game, error } = await supabase
     .from('games')
@@ -57,7 +67,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       black:users!games_black_id_fkey(id, username, rating, avatar_url)
     `
     )
-    .eq('id', id)
+    .eq('id', idParsed.data)
     .single();
 
   if (error || !game) {
@@ -65,11 +75,10 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  // Fetch moves
   const { data: moves } = await supabase
     .from('moves')
     .select('*')
-    .eq('game_id', id)
+    .eq('game_id', idParsed.data)
     .order('move_number', { ascending: true });
 
   res.json({
@@ -80,9 +89,16 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
 // POST /api/games/:id/analyze — run Stockfish analysis on a completed game
 router.post('/:id/analyze', async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  const idParsed = uuidSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    res.status(400).json({ success: false, error: 'Invalid game ID' });
+    return;
+  }
+  const id = idParsed.data;
   const userId = req.userId!;
-  const depth = Math.min(Math.max(parseInt(req.body?.depth) || 14, 8), 20);
+
+  const depthResult = depthSchema.safeParse(req.body?.depth);
+  const depth = depthResult.success ? depthResult.data : 14;
 
   const { data: game, error: fetchError } = await supabase
     .from('games')
@@ -105,7 +121,7 @@ router.post('/:id/analyze', async (req: AuthRequest, res: Response) => {
     return;
   }
 
-  // If already analyzed, return cached results
+  // Return cached analysis if already done
   if (game.white_accuracy !== null && game.white_accuracy !== undefined) {
     const { data: existingMoves } = await supabase
       .from('moves')
@@ -130,7 +146,6 @@ router.post('/:id/analyze', async (req: AuthRequest, res: Response) => {
   try {
     const analysis = await analyzeGame(game.pgn, depth);
 
-    // Persist per-game accuracy
     await supabase
       .from('games')
       .update({
@@ -142,12 +157,11 @@ router.post('/:id/analyze', async (req: AuthRequest, res: Response) => {
       })
       .eq('id', id);
 
-    // Persist per-move analysis onto existing moves rows (matched by move_number)
     for (const m of analysis.moves) {
       await supabase
         .from('moves')
         .update({
-          evaluation: m.evalAfter / 100, // store pawns
+          evaluation: m.evalAfter / 100,
           classification: m.classification,
           best_move: m.bestMove,
           cp_loss: Math.round(m.cpLoss),

@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
@@ -26,9 +27,9 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3001',
 ];
-// Allow any ngrok URLs
+
 const isAllowedOrigin = (origin: string | undefined) => {
-  if (!origin) return true;
+  if (!origin) return true; // same-origin / server-to-server
   if (allowedOrigins.includes(origin)) return true;
   if (origin.endsWith('.ngrok-free.app') || origin.endsWith('.ngrok.io')) return true;
   return false;
@@ -36,8 +37,12 @@ const isAllowedOrigin = (origin: string | undefined) => {
 
 const io = new Server(httpServer, {
   cors: {
-    origin: (_origin, callback) => {
-      callback(null, true);
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
     },
     methods: ['GET', 'POST'],
     credentials: true,
@@ -49,12 +54,13 @@ app.use(cors({
     if (isAllowedOrigin(origin)) {
       callback(null, true);
     } else {
-      callback(null, true); // Allow all for development
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
 }));
 app.use(express.json());
+app.use(cookieParser());
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -82,3 +88,20 @@ httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Client URL: ${clientUrl}`);
 });
+
+// Graceful shutdown — save or abort active games before exiting
+const shutdown = (signal: string) => {
+  console.log(`[${signal}] Shutting down gracefully...`);
+  httpServer.close(() => {
+    console.log('HTTP server closed.');
+    process.exit(0);
+  });
+  // Force exit after 10 s if connections are stuck
+  setTimeout(() => {
+    console.error('Forced exit after timeout.');
+    process.exit(1);
+  }, 10_000).unref();
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
